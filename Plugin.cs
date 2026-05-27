@@ -16,7 +16,7 @@ namespace EquipAllTools
     {
         public const string PluginGuid = "whereswolfgang.equipalltools";
         public const string PluginName = "Equip All Tools";
-        public const string PluginVersion = "1.2.0";
+        public const string PluginVersion = "1.2.1";
 
         private const int FirstBlueYellowToolIndex = 29;
         private const float ForcedToolCueAlphaMultiplier = 0.65f;
@@ -41,6 +41,7 @@ namespace EquipAllTools
         private static readonly System.Reflection.PropertyInfo NestedFadeGroupSpriteRendererColorProperty = AccessTools.Property(NestedFadeGroupSpriteRendererType, "Color");
         private static readonly System.Reflection.PropertyInfo NestedFadeGroupSpriteRendererBaseColorProperty = AccessTools.Property(NestedFadeGroupSpriteRendererType, "BaseColor");
         private static readonly System.Reflection.FieldInfo NestedFadeGroupSpriteRendererSpriteRendererField = AccessTools.Field(NestedFadeGroupSpriteRendererType, "spriteRenderer");
+        private static readonly System.Reflection.FieldInfo CurrencyObjectPopupNameField = AccessTools.Field(typeof(CurrencyObjectBase), "popupName");
         private static readonly System.Reflection.FieldInfo ToolStatusToolField = AccessTools.Field(typeof(ToolItemManager.ToolStatus), "tool");
         private static readonly ToolDefinition[] Tools =
         {
@@ -82,6 +83,7 @@ namespace EquipAllTools
 
         private ConfigEntry<bool> globalModEnabled;
         private ConfigEntry<bool> globalBenchRequirement;
+        private ConfigEntry<bool> magnetiteBroochPullsShards;
         private ConfigEntry<bool> debugLogging;
         private SaveScopedConfigEntry<bool> modEnabled;
         private SaveScopedConfigEntry<bool> benchRequirement;
@@ -113,6 +115,14 @@ namespace EquipAllTools
                     "Require a bench for Equip All Tools inventory hotkeys for every save. Normal crest management always follows the game's bench rules.",
                     null,
                     new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 1 }));
+            magnetiteBroochPullsShards = Config.Bind(
+                "Global: General",
+                "Magnetite Brooch Pulls Shards",
+                true,
+                new ConfigDescription(
+                    "Allow Magnetite Brooch to pull shell shards as well as rosaries.",
+                    null,
+                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 2 }));
             debugLogging = Config.Bind(
                 "Global: General",
                 "Debug Logging",
@@ -120,7 +130,7 @@ namespace EquipAllTools
                 new ConfigDescription(
                     "Log Equip All Tools hotkey decisions and config changes. Useful for troubleshooting.",
                     null,
-                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 2 }));
+                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 3 }));
             modEnabled = saveConfig.Bind(
                 "General",
                 "Enabled",
@@ -188,6 +198,11 @@ namespace EquipAllTools
             if (globalBenchRequirement != null)
             {
                 globalBenchRequirement.SettingChanged -= OnConfigChanged;
+            }
+
+            if (magnetiteBroochPullsShards != null)
+            {
+                magnetiteBroochPullsShards.SettingChanged -= OnConfigChanged;
             }
 
             if (debugLogging != null)
@@ -922,6 +937,50 @@ namespace EquipAllTools
             return true;
         }
 
+        private static bool IsMagnetiteBroochEquipped()
+        {
+            for (int i = 0; i < Tools.Length; i++)
+            {
+                ToolDefinition definition = Tools[i];
+                if (definition.ConfigKey != "Magnetite Brooch")
+                {
+                    continue;
+                }
+
+                ToolItem tool = GetActiveTool(definition, i);
+                return tool != null && tool.IsEquipped;
+            }
+
+            return false;
+        }
+
+        private static bool ShouldMagnetPullShard(CurrencyObjectBase currencyObject)
+        {
+            return Instance != null &&
+                Instance.magnetiteBroochPullsShards != null &&
+                Instance.magnetiteBroochPullsShards.Value &&
+                currencyObject != null &&
+                GetCurrencyPopupNameKey(currencyObject) == "INV_NAME_SHARD" &&
+                IsMagnetiteBroochEquipped();
+        }
+
+        private static string GetCurrencyPopupNameKey(CurrencyObjectBase currencyObject)
+        {
+            if (CurrencyObjectPopupNameField == null || currencyObject == null)
+            {
+                return null;
+            }
+
+            object popupName = CurrencyObjectPopupNameField.GetValue(currencyObject);
+            if (popupName == null)
+            {
+                return null;
+            }
+
+            System.Reflection.PropertyInfo keyProperty = AccessTools.Property(popupName.GetType(), "Key");
+            return keyProperty == null ? null : keyProperty.GetValue(popupName, null) as string;
+        }
+
         private static int GetToolOrder(int index, bool global)
         {
             ToolDefinition definition = Tools[index];
@@ -1131,6 +1190,21 @@ namespace EquipAllTools
             private static void Postfix(List<ToolItem> __result)
             {
                 AddForceEquippedTools(__result);
+            }
+        }
+
+        [HarmonyPatch(typeof(CurrencyObjectBase), "MagnetToolIsEquipped")]
+        private static class CurrencyObjectBaseMagnetToolIsEquippedPatch
+        {
+            private static bool Prefix(CurrencyObjectBase __instance, ref bool __result)
+            {
+                if (!ShouldMagnetPullShard(__instance))
+                {
+                    return true;
+                }
+
+                __result = true;
+                return false;
             }
         }
 
