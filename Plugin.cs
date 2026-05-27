@@ -16,7 +16,7 @@ namespace EquipAllTools
     {
         public const string PluginGuid = "whereswolfgang.equipalltools";
         public const string PluginName = "Equip All Tools";
-        public const string PluginVersion = "1.2.1";
+        public const string PluginVersion = "1.2.2";
 
         private const int FirstBlueYellowToolIndex = 29;
         private const float ForcedToolCueAlphaMultiplier = 0.65f;
@@ -84,6 +84,7 @@ namespace EquipAllTools
         private ConfigEntry<bool> globalModEnabled;
         private ConfigEntry<bool> globalBenchRequirement;
         private ConfigEntry<bool> magnetiteBroochPullsShards;
+        private ConfigEntry<bool> silkspeedAnkletsCostNoSilk;
         private ConfigEntry<bool> debugLogging;
         private SaveScopedConfigEntry<bool> modEnabled;
         private SaveScopedConfigEntry<bool> benchRequirement;
@@ -123,6 +124,14 @@ namespace EquipAllTools
                     "Allow Magnetite Brooch to pull shell shards as well as rosaries.",
                     null,
                     new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 2 }));
+            silkspeedAnkletsCostNoSilk = Config.Bind(
+                "Global: General",
+                "Silkspeed Anklets Cost No Silk",
+                true,
+                new ConfigDescription(
+                    "Prevent Silkspeed Anklets from spending silk while active.",
+                    null,
+                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 3 }));
             debugLogging = Config.Bind(
                 "Global: General",
                 "Debug Logging",
@@ -130,7 +139,7 @@ namespace EquipAllTools
                 new ConfigDescription(
                     "Log Equip All Tools hotkey decisions and config changes. Useful for troubleshooting.",
                     null,
-                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 3 }));
+                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 4 }));
             modEnabled = saveConfig.Bind(
                 "General",
                 "Enabled",
@@ -203,6 +212,11 @@ namespace EquipAllTools
             if (magnetiteBroochPullsShards != null)
             {
                 magnetiteBroochPullsShards.SettingChanged -= OnConfigChanged;
+            }
+
+            if (silkspeedAnkletsCostNoSilk != null)
+            {
+                silkspeedAnkletsCostNoSilk.SettingChanged -= OnConfigChanged;
             }
 
             if (debugLogging != null)
@@ -981,6 +995,20 @@ namespace EquipAllTools
             return keyProperty == null ? null : keyProperty.GetValue(popupName, null) as string;
         }
 
+        private static bool ShouldPreventSilkspeedAnkletsSilkCost(int amount)
+        {
+            if (Instance == null ||
+                Instance.silkspeedAnkletsCostNoSilk == null ||
+                !Instance.silkspeedAnkletsCostNoSilk.Value ||
+                amount != 1)
+            {
+                return false;
+            }
+
+            HeroController heroController = Object.FindFirstObjectByType<HeroController>();
+            return heroController != null && heroController.IsSprintMasterActive;
+        }
+
         private static int GetToolOrder(int index, bool global)
         {
             ToolDefinition definition = Tools[index];
@@ -1205,6 +1233,15 @@ namespace EquipAllTools
 
                 __result = true;
                 return false;
+            }
+        }
+
+        [HarmonyPatch(typeof(PlayerData), "TakeSilk")]
+        private static class PlayerDataTakeSilkPatch
+        {
+            private static bool Prefix(ref int amount)
+            {
+                return !ShouldPreventSilkspeedAnkletsSilkCost(amount);
             }
         }
 

@@ -45,6 +45,7 @@ Save-specific settings are provided by Save Scoped Config, so only the currently
 - `Enabled`: turns Equip All Tools on for the global scope or active save.
 - `Bench Requirement`: when enabled, Equip All Tools hotkey toggles require a bench. When disabled, hotkey toggles can be used anywhere. Normal crest management still follows the game's bench rules.
 - `Magnetite Brooch Pulls Shards`: global-only option that lets Magnetite Brooch pull shell shards as well as rosaries. Enabled by default.
+- `Silkspeed Anklets Cost No Silk`: global-only option that prevents Silkspeed Anklets from spending silk while active. Enabled by default.
 - `Debug Logging`: global-only troubleshooting logs for hotkey decisions and save config changes.
 
 Global settings and save settings combine. If either global or active-save `Enabled` is on, the mod can force tools. For individual tools, a global toggle applies to every save, while a save toggle applies only to the active save.
