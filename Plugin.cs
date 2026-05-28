@@ -2,9 +2,11 @@ using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using GlobalEnums;
+using GlobalSettings;
 using HarmonyLib;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection.Emit;
 using UnityEngine;
 using WheresWolfgang.SaveScopedConfig;
 
@@ -19,12 +21,14 @@ namespace EquipAllTools
         public const string PluginVersion = "1.2.2";
 
         private const int FirstBlueYellowToolIndex = 29;
-        private const float ForcedToolCueAlphaMultiplier = 0.65f;
-        private static readonly Dictionary<int, Color> ForcedToolCueOriginalColors = new Dictionary<int, Color>();
-        private static readonly Dictionary<int, Color> ForcedToolCueActiveColors = new Dictionary<int, Color>();
+        private const float ForcedInventoryCueAlpha = 0.5f;
         private static bool isCleaningNormallyEquippedTools;
+        private static readonly HashSet<string> FracturedMaskVirtualRefills = new HashSet<string>();
 
         private static readonly Harmony Harmony = new Harmony(PluginGuid);
+        private static readonly System.Reflection.MethodInfo ToolItemManagerIsCustomToolOverrideGetter = AccessTools.PropertyGetter(typeof(ToolItemManager), "IsCustomToolOverride");
+        private static readonly System.Reflection.MethodInfo ShouldSuppressCustomToolOverrideForForcedQuickSlingMethod = AccessTools.Method(typeof(Plugin), "ShouldSuppressCustomToolOverrideForForcedQuickSling");
+        private static readonly System.Reflection.MethodInfo ShouldSuppressCustomToolOverrideForForcedPollipPouchMethod = AccessTools.Method(typeof(Plugin), "ShouldSuppressCustomToolOverrideForForcedPollipPouch");
         private static readonly System.Reflection.MethodInfo ClearToolCacheMethod = AccessTools.Method(typeof(ToolItemManager), "ClearToolCache");
         private static readonly System.Reflection.MethodInfo InventoryToolUpdateEquippedDisplayMethod = AccessTools.Method(typeof(InventoryItemTool), "UpdateEquippedDisplay");
         private static readonly System.Reflection.MethodInfo InventoryToolManagerPlayMoveSoundMethod = AccessTools.Method(typeof(InventoryItemToolManager), "PlayMoveSound");
@@ -36,13 +40,11 @@ namespace EquipAllTools
         private static readonly System.Reflection.FieldInfo InventoryToolManagerCrestListField = AccessTools.Field(typeof(InventoryItemToolManager), "crestList");
         private static readonly System.Reflection.FieldInfo InventoryToolManagerExtraSlotsField = AccessTools.Field(typeof(InventoryItemToolManager), "extraSlots");
         private static readonly System.Reflection.FieldInfo InventoryToolSelectedIndicatorField = AccessTools.Field(typeof(InventoryItemTool), "selectedIndicator");
-        private static readonly System.Reflection.FieldInfo InventoryToolEmptyNotchField = AccessTools.Field(typeof(InventoryItemTool), "emptyNotch");
         private static readonly System.Type NestedFadeGroupSpriteRendererType = AccessTools.TypeByName("TeamCherry.NestedFadeGroup.NestedFadeGroupSpriteRenderer");
         private static readonly System.Reflection.PropertyInfo NestedFadeGroupSpriteRendererColorProperty = AccessTools.Property(NestedFadeGroupSpriteRendererType, "Color");
-        private static readonly System.Reflection.PropertyInfo NestedFadeGroupSpriteRendererBaseColorProperty = AccessTools.Property(NestedFadeGroupSpriteRendererType, "BaseColor");
-        private static readonly System.Reflection.FieldInfo NestedFadeGroupSpriteRendererSpriteRendererField = AccessTools.Field(NestedFadeGroupSpriteRendererType, "spriteRenderer");
         private static readonly System.Reflection.FieldInfo CurrencyObjectPopupNameField = AccessTools.Field(typeof(CurrencyObjectBase), "popupName");
         private static readonly System.Reflection.FieldInfo ToolStatusToolField = AccessTools.Field(typeof(ToolItemManager.ToolStatus), "tool");
+        private static readonly System.Reflection.FieldInfo InventoryToolManagerCurrentToolCountField = AccessTools.Field(typeof(InventoryItemToolManager), "currentToolCount");
         private static readonly ToolDefinition[] Tools =
         {
             new ToolDefinition("Defense (Blue)", "Druids Eye", 0, SaveAvailability.Any, "Druids Eyes", 1),
@@ -88,6 +90,8 @@ namespace EquipAllTools
         private ConfigEntry<bool> debugLogging;
         private SaveScopedConfigEntry<bool> modEnabled;
         private SaveScopedConfigEntry<bool> benchRequirement;
+        private SaveScopedConfigEntry<bool> saveMagnetiteBroochPullsShards;
+        private SaveScopedConfigEntry<bool> saveSilkspeedAnkletsCostNoSilk;
         private SaveScopedConfigFile saveConfig;
 
         internal static Plugin Instance { get; private set; }
@@ -107,31 +111,31 @@ namespace EquipAllTools
                 new ConfigDescription(
                     "Enable Equip All Tools for every save.",
                     null,
-                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() }));
+                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 100 }));
             globalBenchRequirement = Config.Bind(
                 "Global: General",
                 "Bench Requirement",
-                true,
+                false,
                 new ConfigDescription(
                     "Require a bench for Equip All Tools inventory hotkeys for every save. Normal crest management always follows the game's bench rules.",
                     null,
-                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 1 }));
+                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 90 }));
             magnetiteBroochPullsShards = Config.Bind(
                 "Global: General",
                 "Magnetite Brooch Pulls Shards",
-                true,
+                false,
                 new ConfigDescription(
                     "Allow Magnetite Brooch to pull shell shards as well as rosaries.",
                     null,
-                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 2 }));
+                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 80 }));
             silkspeedAnkletsCostNoSilk = Config.Bind(
                 "Global: General",
                 "Silkspeed Anklets Cost No Silk",
-                true,
+                false,
                 new ConfigDescription(
                     "Prevent Silkspeed Anklets from spending silk while active.",
                     null,
-                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 3 }));
+                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 70 }));
             debugLogging = Config.Bind(
                 "Global: General",
                 "Debug Logging",
@@ -139,29 +143,9 @@ namespace EquipAllTools
                 new ConfigDescription(
                     "Log Equip All Tools hotkey decisions and config changes. Useful for troubleshooting.",
                     null,
-                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 4 }));
-            modEnabled = saveConfig.Bind(
-                "General",
-                "Enabled",
-                true,
-                new SaveScopedConfigDescription("Enable Equip All Tools for this save.")
-                {
-                    Order = () => GetSaveGeneralOrder(),
-                });
-            modEnabled.SettingChanged += OnConfigChanged;
-            benchRequirement = saveConfig.Bind(
-                "General",
-                "Bench Requirement",
-                true,
-                new SaveScopedConfigDescription("Require a bench for Equip All Tools inventory hotkeys for this save. Normal crest management always follows the game's bench rules.")
-                {
-                    Order = () => GetSaveGeneralOrder() + 1,
-                });
-            benchRequirement.SettingChanged += OnConfigChanged;
-
+                    new ConfigurationManagerAttributes { Order = GetGlobalGeneralOrder() + 60 }));
             for (int i = 0; i < Tools.Length; i++)
             {
-                int toolIndex = i;
                 ToolDefinition tool = Tools[i];
                 tool.GlobalDisplayAttributes = new ConfigurationManagerAttributes { Order = GetToolOrder(i, true) };
                 tool.GlobalEnabled = Config.Bind(
@@ -172,6 +156,51 @@ namespace EquipAllTools
                         "Force " + tool.ConfigKey + " to count as equipped for every save.",
                         null,
                         tool.GlobalDisplayAttributes));
+                tool.GlobalEnabled.SettingChanged += OnConfigChanged;
+                Tools[i] = tool;
+            }
+
+            modEnabled = saveConfig.Bind(
+                "General",
+                "Enabled",
+                true,
+                new SaveScopedConfigDescription("Enable Equip All Tools for this save.")
+                {
+                    Order = () => GetSaveGeneralOrder() + 100,
+                });
+            modEnabled.SettingChanged += OnConfigChanged;
+            benchRequirement = saveConfig.Bind(
+                "General",
+                "Bench Requirement",
+                true,
+                new SaveScopedConfigDescription("Require a bench for Equip All Tools inventory hotkeys for this save. Normal crest management always follows the game's bench rules.")
+                {
+                    Order = () => GetSaveGeneralOrder() + 90,
+                });
+            benchRequirement.SettingChanged += OnConfigChanged;
+            saveMagnetiteBroochPullsShards = saveConfig.Bind(
+                "General",
+                "Magnetite Brooch Pulls Shards",
+                true,
+                new SaveScopedConfigDescription("Allow Magnetite Brooch to pull shell shards as well as rosaries for this save.")
+                {
+                    Order = () => GetSaveGeneralOrder() + 80,
+                });
+            saveMagnetiteBroochPullsShards.SettingChanged += OnConfigChanged;
+            saveSilkspeedAnkletsCostNoSilk = saveConfig.Bind(
+                "General",
+                "Silkspeed Anklets Cost No Silk",
+                true,
+                new SaveScopedConfigDescription("Prevent Silkspeed Anklets from spending silk while active for this save.")
+                {
+                    Order = () => GetSaveGeneralOrder() + 70,
+                });
+            saveSilkspeedAnkletsCostNoSilk.SettingChanged += OnConfigChanged;
+
+            for (int i = 0; i < Tools.Length; i++)
+            {
+                int toolIndex = i;
+                ToolDefinition tool = Tools[i];
                 tool.SaveEnabled = saveConfig.Bind(
                     tool.Category,
                     tool.ConfigKey,
@@ -182,13 +211,13 @@ namespace EquipAllTools
                         DisplayName = () => Tools[toolIndex].CurrentDisplayName,
                         Order = () => GetToolOrder(toolIndex, false),
                     });
-                tool.GlobalEnabled.SettingChanged += OnConfigChanged;
                 tool.SaveEnabled.SettingChanged += OnConfigChanged;
                 Tools[i] = tool;
             }
 
             SaveScopedConfig.ActiveSaveChanged += OnActiveSaveChanged;
             UpdateSaveToolVisibility(true);
+            SyncForcedToolSideEffects();
 
             Harmony.PatchAll(typeof(Plugin).Assembly);
             RefreshToolHud();
@@ -234,6 +263,16 @@ namespace EquipAllTools
                 benchRequirement.SettingChanged -= OnConfigChanged;
             }
 
+            if (saveMagnetiteBroochPullsShards != null)
+            {
+                saveMagnetiteBroochPullsShards.SettingChanged -= OnConfigChanged;
+            }
+
+            if (saveSilkspeedAnkletsCostNoSilk != null)
+            {
+                saveSilkspeedAnkletsCostNoSilk.SettingChanged -= OnConfigChanged;
+            }
+
             for (int i = 0; i < Tools.Length; i++)
             {
                 ToolDefinition definition = Tools[i];
@@ -256,8 +295,6 @@ namespace EquipAllTools
 
             Harmony.UnpatchSelf();
             ClearMappedTools();
-            ForcedToolCueOriginalColors.Clear();
-            ForcedToolCueActiveColors.Clear();
             Instance = null;
             Log = null;
         }
@@ -265,11 +302,13 @@ namespace EquipAllTools
         private void OnActiveSaveChanged()
         {
             UpdateSaveToolVisibility(true);
+            SyncForcedToolSideEffects();
             RefreshToolHud();
         }
 
         private void OnConfigChanged(object sender, System.EventArgs args)
         {
+            SyncForcedToolSideEffects();
             RefreshToolHud();
         }
 
@@ -358,6 +397,66 @@ namespace EquipAllTools
             return false;
         }
 
+        private static bool ShouldSuppressCustomToolOverrideForForcedQuickSling()
+        {
+            return ToolItemManager.IsCustomToolOverride && !IsToolForceEquipped(Gameplay.QuickSlingTool);
+        }
+
+        private static bool ShouldSuppressCustomToolOverrideForForcedPollipPouch()
+        {
+            return ToolItemManager.IsCustomToolOverride && !IsToolForceEquipped(Gameplay.PoisonPouchTool);
+        }
+
+        private static IEnumerable<CodeInstruction> ReplaceCustomToolOverrideCheck(
+            IEnumerable<CodeInstruction> instructions,
+            System.Reflection.MethodInfo replacementMethod)
+        {
+            foreach (CodeInstruction instruction in instructions)
+            {
+                if (ToolItemManagerIsCustomToolOverrideGetter != null &&
+                    replacementMethod != null &&
+                    instruction.Calls(ToolItemManagerIsCustomToolOverrideGetter))
+                {
+                    yield return new CodeInstruction(OpCodes.Call, replacementMethod);
+                    continue;
+                }
+
+                yield return instruction;
+            }
+        }
+
+        private static void SyncForcedToolSideEffects()
+        {
+            EnsureForcedFracturedMaskHasCharge();
+        }
+
+        private static void EnsureForcedFracturedMaskHasCharge()
+        {
+            ToolItem fracturedMaskTool = Gameplay.FracturedMaskTool;
+            if (fracturedMaskTool == null)
+            {
+                return;
+            }
+
+            string refillKey = SaveScopedConfig.ActiveSaveKey;
+            if (!IsToolForceEquipped(fracturedMaskTool) || string.IsNullOrEmpty(refillKey))
+            {
+                FracturedMaskVirtualRefills.Remove(refillKey);
+                return;
+            }
+
+            if (FracturedMaskVirtualRefills.Contains(refillKey) || fracturedMaskTool.SavedData.AmountLeft > 0)
+            {
+                return;
+            }
+
+            ToolItemsData.Data savedData = fracturedMaskTool.SavedData;
+            savedData.AmountLeft = Mathf.Max(1, ToolItemManager.GetToolStorageAmount(fracturedMaskTool));
+            fracturedMaskTool.SavedData = savedData;
+            FracturedMaskVirtualRefills.Add(refillKey);
+            DebugLog("Gave forced Fractured Mask a virtual charge for " + refillKey + ".");
+        }
+
         private static void RefreshToolHud()
         {
             try
@@ -420,7 +519,7 @@ namespace EquipAllTools
             if (isNormallyEquipped)
             {
                 SetSaveToolForced(definitionIndex, false);
-                UpdateInventoryToolDisplay(inventoryTool);
+                UpdateInventoryToolDisplay(inventoryTool, true);
                 RefreshToolHud();
                 DebugLog("Ignored inventory hotkey because " + definition.CurrentDisplayName + " is already equipped normally.");
                 return true;
@@ -428,7 +527,7 @@ namespace EquipAllTools
 
             bool enabled = !definition.SaveEnabled.Value;
             SetSaveToolForced(definitionIndex, enabled);
-            UpdateInventoryToolDisplay(inventoryTool);
+            UpdateInventoryToolDisplay(inventoryTool, !enabled);
             PlayInventoryToggleSound(inventoryTool);
             RefreshToolHud();
             DebugLog("Hotkey toggled " + definition.CurrentDisplayName + " " + (enabled ? "on" : "off") + " for " + SaveScopedConfig.ActiveSaveKey + ".");
@@ -627,6 +726,19 @@ namespace EquipAllTools
             return false;
         }
 
+        private static bool TryGetForcedInventoryCueColor(object manager, ToolItemType toolType, out Color color)
+        {
+            if (manager == null || InventoryToolManagerGetToolTypeColorMethod == null)
+            {
+                color = Color.white;
+                return false;
+            }
+
+            color = (Color)InventoryToolManagerGetToolTypeColorMethod.Invoke(manager, new object[] { toolType });
+            color.a = ForcedInventoryCueAlpha;
+            return true;
+        }
+
         private static object GetInventoryToolManager(InventoryItemTool inventoryTool)
         {
             if (inventoryTool == null || InventoryToolManagerField == null)
@@ -646,167 +758,35 @@ namespace EquipAllTools
 
         private static void ApplyForcedInventoryCue(InventoryItemTool inventoryTool)
         {
-            if (inventoryTool == null)
+            if (inventoryTool == null || !IsInventoryToolForcedOnly(inventoryTool) || NestedFadeGroupSpriteRendererColorProperty == null)
             {
                 return;
             }
 
-            bool forcedOnly = IsInventoryToolForcedOnly(inventoryTool);
             object manager = GetInventoryToolManager(inventoryTool);
-            Color cueColor = GetInventoryToolCueColor(inventoryTool, manager);
-            ApplyNestedFadeSpriteCue(
-                InventoryToolSelectedIndicatorField == null ? null : InventoryToolSelectedIndicatorField.GetValue(inventoryTool),
-                forcedOnly,
-                cueColor);
-            ApplyEmptyNotchCue(
-                InventoryToolEmptyNotchField == null ? null : InventoryToolEmptyNotchField.GetValue(inventoryTool) as GameObject,
-                forcedOnly,
-                cueColor);
-        }
-
-        private static void ApplyEmptyNotchCue(GameObject emptyNotch, bool forcedOnly, Color cueColor)
-        {
-            if (emptyNotch == null)
-            {
-                return;
-            }
-
-            if (NestedFadeGroupSpriteRendererType != null)
-            {
-                Component[] fadeSprites = emptyNotch.GetComponentsInChildren(NestedFadeGroupSpriteRendererType, true);
-                for (int i = 0; i < fadeSprites.Length; i++)
-                {
-                    ApplyNestedFadeSpriteCue(fadeSprites[i], forcedOnly, cueColor);
-                }
-            }
-
-            SpriteRenderer[] spriteRenderers = emptyNotch.GetComponentsInChildren<SpriteRenderer>(true);
-            for (int i = 0; i < spriteRenderers.Length; i++)
-            {
-                ApplySpriteRendererCue(spriteRenderers[i], forcedOnly, cueColor);
-            }
-        }
-
-        private static void ApplyNestedFadeSpriteCue(object fadeSprite, bool forcedOnly, Color cueColor)
-        {
-            if (fadeSprite == null ||
-                NestedFadeGroupSpriteRendererColorProperty == null ||
-                NestedFadeGroupSpriteRendererBaseColorProperty == null)
-            {
-                return;
-            }
-
-            UnityEngine.Object unityObject = fadeSprite as UnityEngine.Object;
-            if (unityObject == null)
-            {
-                return;
-            }
-
-            int objectId = unityObject.GetInstanceID();
-            Color originalColor;
-            if (!ForcedToolCueOriginalColors.TryGetValue(objectId, out originalColor))
-            {
-                originalColor = (Color)NestedFadeGroupSpriteRendererBaseColorProperty.GetValue(fadeSprite, null);
-                ForcedToolCueOriginalColors[objectId] = originalColor;
-            }
-
-            Color color = forcedOnly ? GetForcedCueColor(cueColor, originalColor.a) : originalColor;
-            if (forcedOnly)
-            {
-                ForcedToolCueActiveColors[objectId] = color;
-            }
-            else
-            {
-                ForcedToolCueActiveColors.Remove(objectId);
-            }
-
-            NestedFadeGroupSpriteRendererBaseColorProperty.SetValue(fadeSprite, color, null);
-            NestedFadeGroupSpriteRendererColorProperty.SetValue(fadeSprite, color, null);
-            SetNestedFadeSpriteRendererColor(fadeSprite, color);
-        }
-
-        private static void ApplySpriteRendererCue(SpriteRenderer spriteRenderer, bool forcedOnly, Color cueColor)
-        {
-            if (spriteRenderer == null)
-            {
-                return;
-            }
-
-            int objectId = spriteRenderer.GetInstanceID();
-            Color originalColor;
-            if (!ForcedToolCueOriginalColors.TryGetValue(objectId, out originalColor))
-            {
-                originalColor = spriteRenderer.color;
-                ForcedToolCueOriginalColors[objectId] = originalColor;
-            }
-
-            spriteRenderer.color = forcedOnly ? GetForcedCueColor(cueColor, originalColor.a) : originalColor;
-        }
-
-        private static void ReapplyNestedFadeSpriteCue(object fadeSprite)
-        {
-            if (fadeSprite == null ||
-                NestedFadeGroupSpriteRendererColorProperty == null ||
-                NestedFadeGroupSpriteRendererBaseColorProperty == null)
-            {
-                return;
-            }
-
-            UnityEngine.Object unityObject = fadeSprite as UnityEngine.Object;
-            if (unityObject == null)
+            if (manager == null)
             {
                 return;
             }
 
             Color color;
-            if (!ForcedToolCueActiveColors.TryGetValue(unityObject.GetInstanceID(), out color))
+            if (!TryGetForcedInventoryCueColor(manager, inventoryTool.ToolType, out color))
             {
                 return;
             }
 
-            NestedFadeGroupSpriteRendererBaseColorProperty.SetValue(fadeSprite, color, null);
-            NestedFadeGroupSpriteRendererColorProperty.SetValue(fadeSprite, color, null);
-            SetNestedFadeSpriteRendererColor(fadeSprite, color);
-        }
-
-        private static void SetNestedFadeSpriteRendererColor(object fadeSprite, Color color)
-        {
-            if (NestedFadeGroupSpriteRendererSpriteRendererField == null)
+            object selectedIndicator = InventoryToolSelectedIndicatorField == null ? null : InventoryToolSelectedIndicatorField.GetValue(inventoryTool);
+            if (selectedIndicator != null)
             {
-                return;
-            }
-
-            SpriteRenderer spriteRenderer = NestedFadeGroupSpriteRendererSpriteRendererField.GetValue(fadeSprite) as SpriteRenderer;
-            if (spriteRenderer != null)
-            {
-                spriteRenderer.color = color;
+                NestedFadeGroupSpriteRendererColorProperty.SetValue(selectedIndicator, color, null);
             }
         }
 
-        private static Color GetInventoryToolCueColor(InventoryItemTool inventoryTool, object manager)
-        {
-            if (inventoryTool != null && manager != null && InventoryToolManagerGetToolTypeColorMethod != null)
-            {
-                return (Color)InventoryToolManagerGetToolTypeColorMethod.Invoke(manager, new object[] { inventoryTool.ToolType });
-            }
-
-            return Color.white;
-        }
-
-        private static Color GetForcedCueColor(Color baseColor, float alpha)
-        {
-            return new Color(
-                baseColor.r,
-                baseColor.g,
-                baseColor.b,
-                alpha * ForcedToolCueAlphaMultiplier);
-        }
-
-        private static void UpdateInventoryToolDisplay(InventoryItemTool inventoryTool)
+        private static void UpdateInventoryToolDisplay(InventoryItemTool inventoryTool, bool isInstant = false)
         {
             if (InventoryToolUpdateEquippedDisplayMethod != null)
             {
-                InventoryToolUpdateEquippedDisplayMethod.Invoke(inventoryTool, new object[] { false });
+                InventoryToolUpdateEquippedDisplayMethod.Invoke(inventoryTool, new object[] { isInstant });
             }
 
             ApplyForcedInventoryCue(inventoryTool);
@@ -940,6 +920,50 @@ namespace EquipAllTools
             }
         }
 
+        private static void AddForceVisibleTools(List<ToolItem> result)
+        {
+            if (Instance == null || result == null)
+            {
+                return;
+            }
+
+            bool isModEnabled = Instance.globalModEnabled.Value || Instance.modEnabled.Value;
+            if (!isModEnabled)
+            {
+                return;
+            }
+
+            List<ToolItem> allTools = ToolItemManager.GetAllTools().ToList();
+            for (int i = 0; i < allTools.Count; i++)
+            {
+                ToolItem tool = allTools[i];
+                if (IsToolForceEquipped(tool) && !result.Contains(tool))
+                {
+                    result.Add(tool);
+                }
+            }
+        }
+
+        private static void UpdateInventoryToolCount(InventoryItemToolManager manager, List<ToolItem> tools)
+        {
+            if (manager == null || tools == null || InventoryToolManagerCurrentToolCountField == null)
+            {
+                return;
+            }
+
+            int count = 0;
+            for (int i = 0; i < tools.Count; i++)
+            {
+                ToolItem tool = tools[i];
+                if (tool != null && tool.IsUnlockedNotHidden)
+                {
+                    count++;
+                }
+            }
+
+            InventoryToolManagerCurrentToolCountField.SetValue(manager, count);
+        }
+
         private static bool IsDefinitionEnabled(int index)
         {
             ToolDefinition definition = Tools[index];
@@ -971,11 +995,17 @@ namespace EquipAllTools
         private static bool ShouldMagnetPullShard(CurrencyObjectBase currencyObject)
         {
             return Instance != null &&
-                Instance.magnetiteBroochPullsShards != null &&
-                Instance.magnetiteBroochPullsShards.Value &&
+                IsMagnetiteBroochShardPullEnabled() &&
                 currencyObject != null &&
                 GetCurrencyPopupNameKey(currencyObject) == "INV_NAME_SHARD" &&
                 IsMagnetiteBroochEquipped();
+        }
+
+        private static bool IsMagnetiteBroochShardPullEnabled()
+        {
+            return Instance != null &&
+                ((Instance.magnetiteBroochPullsShards != null && Instance.magnetiteBroochPullsShards.Value) ||
+                (Instance.saveMagnetiteBroochPullsShards != null && Instance.saveMagnetiteBroochPullsShards.Value));
         }
 
         private static string GetCurrencyPopupNameKey(CurrencyObjectBase currencyObject)
@@ -998,8 +1028,7 @@ namespace EquipAllTools
         private static bool ShouldPreventSilkspeedAnkletsSilkCost(int amount)
         {
             if (Instance == null ||
-                Instance.silkspeedAnkletsCostNoSilk == null ||
-                !Instance.silkspeedAnkletsCostNoSilk.Value ||
+                !IsSilkspeedAnkletsCostNoSilkEnabled() ||
                 amount != 1)
             {
                 return false;
@@ -1007,6 +1036,13 @@ namespace EquipAllTools
 
             HeroController heroController = Object.FindFirstObjectByType<HeroController>();
             return heroController != null && heroController.IsSprintMasterActive;
+        }
+
+        private static bool IsSilkspeedAnkletsCostNoSilkEnabled()
+        {
+            return Instance != null &&
+                ((Instance.silkspeedAnkletsCostNoSilk != null && Instance.silkspeedAnkletsCostNoSilk.Value) ||
+                (Instance.saveSilkspeedAnkletsCostNoSilk != null && Instance.saveSilkspeedAnkletsCostNoSilk.Value));
         }
 
         private static int GetToolOrder(int index, bool global)
@@ -1182,6 +1218,30 @@ namespace EquipAllTools
             }
         }
 
+        [HarmonyPatch(typeof(ToolItem), "IsUnlocked", MethodType.Getter)]
+        private static class ToolItemIsUnlockedPatch
+        {
+            private static void Postfix(ToolItem __instance, ref bool __result)
+            {
+                if (!__result && IsToolForceEquipped(__instance))
+                {
+                    __result = true;
+                }
+            }
+        }
+
+        [HarmonyPatch(typeof(ToolItem), "IsUnlockedNotHidden", MethodType.Getter)]
+        private static class ToolItemIsUnlockedNotHiddenPatch
+        {
+            private static void Postfix(ToolItem __instance, ref bool __result)
+            {
+                if (!__result && IsToolForceEquipped(__instance))
+                {
+                    __result = true;
+                }
+            }
+        }
+
         [HarmonyPatch(typeof(ToolItemManager.ToolStatus), "IsEquipped", MethodType.Getter)]
         private static class ToolStatusIsEquippedPatch
         {
@@ -1218,6 +1278,43 @@ namespace EquipAllTools
             private static void Postfix(List<ToolItem> __result)
             {
                 AddForceEquippedTools(__result);
+            }
+        }
+
+        [HarmonyPatch(typeof(InventoryItemToolManager), "GetItems")]
+        private static class InventoryItemToolManagerGetItemsPatch
+        {
+            private static void Postfix(InventoryItemToolManager __instance, List<ToolItem> __result)
+            {
+                AddForceVisibleTools(__result);
+                UpdateInventoryToolCount(__instance, __result);
+            }
+        }
+
+        [HarmonyPatch(typeof(HeroController), "ThrowTool")]
+        private static class HeroControllerThrowToolPatch
+        {
+            private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+            {
+                return ReplaceCustomToolOverrideCheck(instructions, ShouldSuppressCustomToolOverrideForForcedQuickSlingMethod);
+            }
+        }
+
+        [HarmonyPatch(typeof(ClockworkHatchling), "RecordPoisonStatus")]
+        private static class ClockworkHatchlingRecordPoisonStatusPatch
+        {
+            private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+            {
+                return ReplaceCustomToolOverrideCheck(instructions, ShouldSuppressCustomToolOverrideForForcedPollipPouchMethod);
+            }
+        }
+
+        [HarmonyPatch(typeof(ClockworkHatchlingDummy), "CheckPoison")]
+        private static class ClockworkHatchlingDummyCheckPoisonPatch
+        {
+            private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+            {
+                return ReplaceCustomToolOverrideCheck(instructions, ShouldSuppressCustomToolOverrideForForcedPollipPouchMethod);
             }
         }
 
@@ -1268,21 +1365,7 @@ namespace EquipAllTools
             }
         }
 
-        [HarmonyPatch]
-        private static class NestedFadeGroupSpriteRendererLateUpdatePatch
-        {
-            private static System.Reflection.MethodBase TargetMethod()
-            {
-                return AccessTools.Method(NestedFadeGroupSpriteRendererType, "OnLateUpdate");
-            }
-
-            private static void Postfix(object __instance)
-            {
-                ReapplyNestedFadeSpriteCue(__instance);
-            }
-        }
-
-        [HarmonyPatch(typeof(InventoryItemToolManager), "RefreshTools")]
+        [HarmonyPatch(typeof(InventoryItemToolManager), "RefreshTools", new System.Type[0])]
         private static class InventoryItemToolManagerRefreshToolsPatch
         {
             private static void Postfix(InventoryItemToolManager __instance)
