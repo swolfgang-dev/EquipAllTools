@@ -40,11 +40,14 @@ namespace EquipAllTools
         private static readonly System.Reflection.FieldInfo InventoryToolManagerCrestListField = AccessTools.Field(typeof(InventoryItemToolManager), "crestList");
         private static readonly System.Reflection.FieldInfo InventoryToolManagerExtraSlotsField = AccessTools.Field(typeof(InventoryItemToolManager), "extraSlots");
         private static readonly System.Reflection.FieldInfo InventoryToolSelectedIndicatorField = AccessTools.Field(typeof(InventoryItemTool), "selectedIndicator");
+        private static readonly System.Reflection.FieldInfo InventoryToolManagerCrestEquipMsgField = AccessTools.Field(typeof(InventoryItemToolManager), "crestEquipMsg");
+        private static readonly System.Type TextMeshProType = AccessTools.TypeByName("TMProOld.TextMeshPro");
         private static readonly System.Type NestedFadeGroupSpriteRendererType = AccessTools.TypeByName("TeamCherry.NestedFadeGroup.NestedFadeGroupSpriteRenderer");
         private static readonly System.Reflection.PropertyInfo NestedFadeGroupSpriteRendererColorProperty = AccessTools.Property(NestedFadeGroupSpriteRendererType, "Color");
         private static readonly System.Reflection.FieldInfo CurrencyObjectPopupNameField = AccessTools.Field(typeof(CurrencyObjectBase), "popupName");
         private static readonly System.Reflection.FieldInfo ToolStatusToolField = AccessTools.Field(typeof(ToolItemManager.ToolStatus), "tool");
         private static readonly System.Reflection.FieldInfo InventoryToolManagerCurrentToolCountField = AccessTools.Field(typeof(InventoryItemToolManager), "currentToolCount");
+        private const string ToolBenchMessage = "Equip Tools while resting at a bench.";
         private static readonly ToolDefinition[] Tools =
         {
             new ToolDefinition("Defense (Blue)", "Druids Eye", 0, SaveAvailability.Any, "Druids Eyes", 1),
@@ -498,7 +501,8 @@ namespace EquipAllTools
             if (!CanUseInventoryHotkeyHere(inventoryTool))
             {
                 DebugLog("Ignored inventory hotkey because the bench requirement is active.");
-                return false;
+                ShowToolBenchMessage(manager);
+                return true;
             }
 
             int definitionIndex;
@@ -555,6 +559,46 @@ namespace EquipAllTools
             return (bool)InventoryToolManagerCanChangeEquipsMethod.Invoke(manager, null);
         }
 
+        private static void ShowToolBenchMessage(object manager)
+        {
+            InventoryItemToolManager inventoryManager = manager as InventoryItemToolManager;
+            if (inventoryManager == null)
+            {
+                return;
+            }
+
+            inventoryManager.ShowCrestEquipMsg();
+            SetToolBenchMessageText(inventoryManager);
+        }
+
+        private static void SetToolBenchMessageText(InventoryItemToolManager manager)
+        {
+            object crestEquipMsg = InventoryToolManagerCrestEquipMsgField == null || manager == null
+                ? null
+                : InventoryToolManagerCrestEquipMsgField.GetValue(manager);
+            Component component = crestEquipMsg as Component;
+            if (component == null)
+            {
+                return;
+            }
+
+            if (TextMeshProType == null)
+            {
+                return;
+            }
+
+            Component[] texts = component.GetComponentsInChildren(TextMeshProType, true);
+            System.Reflection.PropertyInfo textProperty = AccessTools.Property(TextMeshProType, "text");
+            for (int i = 0; i < texts.Length; i++)
+            {
+                Component text = texts[i];
+                if (text != null && textProperty != null && !string.IsNullOrEmpty(textProperty.GetValue(text, null) as string))
+                {
+                    textProperty.SetValue(text, ToolBenchMessage, null);
+                }
+            }
+        }
+
         private static bool ShouldBypassBenchRequirementForHotkey(InventoryItemToolManager manager)
         {
             if (Instance == null || manager == null || !SaveScopedConfig.HasActiveSave || !IsInventoryToggleModifierHeld())
@@ -581,7 +625,7 @@ namespace EquipAllTools
                 return true;
             }
 
-            return Instance.globalBenchRequirement.Value && Instance.benchRequirement.Value;
+            return Instance.globalBenchRequirement.Value || Instance.benchRequirement.Value;
         }
 
         private static bool SetSaveToolForced(ToolItem tool, bool enabled)
